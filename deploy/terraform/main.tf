@@ -14,7 +14,8 @@
 terraform {
   required_version = ">= 1.5"
   required_providers {
-    aws = { source = "hashicorp/aws", version = "~> 5.0" }
+    aws  = { source = "hashicorp/aws", version = "~> 5.0" }
+    null = { source = "hashicorp/null", version = "~> 3.0" }
   }
 }
 
@@ -25,7 +26,8 @@ provider "aws" {
 variable "region" { default = "us-west-2" }
 variable "instance_type" { default = "t3.small" }
 variable "my_ip" { description = "CIDR allowed to reach the HTTP API and SSH directly, e.g. 1.2.3.4/32" }
-variable "ssh_key_name" { default = null }
+variable "ssh_key_name" { description = "Name of an EC2 key pair that already exists in the region" }
+variable "ssh_private_key" { description = "Path to the private key of that key pair, e.g. ~/.ssh/edgekv.pem" }
 variable "image" { default = "ghcr.io/tr3nt-xie/edgekv:latest" }
 variable "shards" { default = 3 }
 
@@ -193,7 +195,7 @@ resource "null_resource" "bootstrap" {
     type        = "ssh"
     host        = aws_instance.node[count.index].public_ip
     user        = "ec2-user"
-    private_key = var.ssh_key_name != null ? file("~/.ssh/${var.ssh_key_name}.pem") : null
+    private_key = file(pathexpand(var.ssh_private_key))
   }
   provisioner "remote-exec" {
     inline = [
