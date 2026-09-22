@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"slices"
 	"sync"
 	"testing"
@@ -282,5 +283,86 @@ func TestRaftOnDiskSurvivesRestarts(t *testing.T) {
 		if got := sms[id].log(); !slices.Equal(got, ref) {
 			t.Fatalf("%s diverged from n1", id)
 		}
+	}
+}
+
+// Two snapshots in flight at once (the applier's own and one installed from
+// the leader) must never leave the store in a state where the log has been
+// compacted but no snapshot file survives. Regression test for a bug found by
+// the linearizability chaos test.
+func TestConcurrentSnapshotsNeverLoseTheSnapshot(t *testing.T) {
+	dir, opts := t.TempDir(), Options{Sync: false, SegmentSize: 1024}
+	s, _ := reopen(t, nil, dir, opts)
+	s.Save(&pb.HardState{Term: 1}, entries(1, 1, 200))
+
+	var wg sync.WaitGroup
+	for round := 0; round < 20; round++ {
+		base := uint64(10 + round*8)
+		for _, idx := range []uint64{base, base + 3, base + 5} {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				s.SaveSnapshot(&pb.SnapshotMeta{LastIncludedIndex: idx, LastIncludedTerm: 1}, []byte(fmt.Sprintf("state@%d", idx)), false)
+			}()
+		}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			s.Save(nil, entries(1, 201+uint64(round), 201+uint64(round)))
+		}()
+		wg.Wait()
+
+		// Whatever interleaving happened, a reload must find a snapshot whose
+		// index is at least the highest one saved, followed by a contiguous log.
+		_, loaded := reopen(t, s, dir, opts)
+		if loaded.SnapshotMeta == nil {
+			t.Fatalf("round %d: no snapshot on disk after concurrent SaveSnapshot", round)
+		}
+		if loaded.SnapshotMeta.LastIncludedIndex < base+5 {
+			t.Fatalf("round %d: snapshot index %d, want >= %d", round, loaded.SnapshotMeta.LastIncludedIndex, base+5)
+		}
+		if n := len(loaded.Entries); n > 0 && loaded.Entries[0].Index != loaded.SnapshotMeta.LastIncludedIndex+1 {
+			t.Fatalf("round %d: gap between snapshot %d and first entry %d", round, loaded.SnapshotMeta.LastIncludedIndex, loaded.Entries[0].Index)
+		}
+		s, _ = reopen(t, nil, dir, opts)
+	}
+}
+
+// A Save that rotates the WAL (and therefore runs GC) while a SaveSnapshot is
+// between renaming its file and publishing it in s.meta must not delete that
+// newer snapshot. Regression test: found by the linearizability chaos test as
+// "gap in log: have 0 entries after snapshot 0".
+func TestRotationGCDoesNotDeleteNewerSnapshot(t *testing.T) {
+	dir, opts := t.TempDir(), Options{Sync: false, SegmentSize: 512}
+	s, _ := reopen(t, nil, dir, opts)
+	s.Save(&pb.HardState{Term: 1}, entries(1, 1, 50))
+	if err := s.SaveSnapshot(&pb.SnapshotMeta{LastIncludedIndex: 20, LastIncludedTerm: 1}, []byte("old"), false); err != nil {
+		t.Fatal(err)
+	}
+
+	// Simulate the window inside SaveSnapshot(40): the file is already on disk
+	// under its final name, but s.meta still says 20.
+	newer := &pb.SnapshotMeta{LastIncludedIndex: 40, LastIncludedTerm: 1}
+	if err := s.writeSnapshotFile(newer, []byte("new")); err != nil {
+		t.Fatal(err)
+	}
+	// Now a Save large enough to rotate, which runs gcLocked with meta=20.
+	big := make([]*pb.Entry, 0, 20)
+	for i := uint64(51); i <= 70; i++ {
+		big = append(big, &pb.Entry{Index: i, Term: 1, Data: make([]byte, 100)})
+	}
+	if err := s.Save(nil, big); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(s.snapshotPath(newer)); err != nil {
+		t.Fatalf("rotation GC deleted the newer snapshot file: %v", err)
+	}
+	// Finish the SaveSnapshot(40): it must publish and be what a reload finds.
+	if err := s.SaveSnapshot(newer, []byte("new"), false); err != nil {
+		t.Fatal(err)
+	}
+	_, loaded := reopen(t, s, dir, opts)
+	if loaded.SnapshotMeta == nil || loaded.SnapshotMeta.LastIncludedIndex != 40 || string(loaded.SnapshotData) != "new" {
+		t.Fatalf("reload: snapshot = %v %q, want index 40 \"new\"", loaded.SnapshotMeta, loaded.SnapshotData)
 	}
 }

@@ -14,6 +14,7 @@ import (
 	"log/slog"
 	"path/filepath"
 	"sort"
+	"sync"
 	"time"
 
 	"google.golang.org/protobuf/proto"
@@ -66,8 +67,9 @@ type Node struct {
 	shards []*Shard
 	log    *slog.Logger
 
-	stopCh chan struct{}
-	done   chan struct{}
+	stopOnce sync.Once
+	stopCh   chan struct{}
+	done     chan struct{}
 }
 
 // New opens the storage of every shard and restores their state. Nothing runs
@@ -133,12 +135,14 @@ func (n *Node) Start() {
 
 // Stop shuts all shards down and closes their storage.
 func (n *Node) Stop() {
-	close(n.stopCh)
-	<-n.done
-	for _, s := range n.shards {
-		s.Raft.Stop()
-	}
-	n.closeStorage()
+	n.stopOnce.Do(func() {
+		close(n.stopCh)
+		<-n.done
+		for _, s := range n.shards {
+			s.Raft.Stop()
+		}
+		n.closeStorage()
+	})
 }
 
 func (n *Node) closeStorage() {

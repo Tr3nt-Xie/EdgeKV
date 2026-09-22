@@ -14,3 +14,13 @@
 
 # local cluster runtime
 /run/
+
+# personal study material, not part of the project
+/docs/learning/
+/docs/roadmap.md
+*.pdf
+
+# terraform working files
+.terraform/
+*.tfstate*
+.terraform.lock.hcl

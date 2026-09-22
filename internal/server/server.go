@@ -42,6 +42,7 @@ const (
 	headerRequestID = "X-Request-Id"
 	headerVersion   = "X-Edgekv-Version"
 	headerServedBy  = "X-Edgekv-Served-By"
+	headerShard     = "X-Edgekv-Shard" // lets leader-aware clients learn the key -> shard -> leader mapping
 )
 
 // Config configures the gateway.
@@ -191,6 +192,7 @@ func (s *Server) write(w http.ResponseWriter, r *http.Request, body []byte, cmd 
 		return
 	}
 	w.Header().Set(headerServedBy, s.cfg.NodeID)
+	w.Header().Set(headerShard, strconv.Itoa(int(s.cfg.Node.ShardFor(cmd.Key).ID)))
 	switch res.Status {
 	case pb.Status_STATUS_OK:
 		// Invalidate only after the write is committed. The other order would
@@ -285,6 +287,7 @@ func (s *Server) read(w http.ResponseWriter, r *http.Request, key string) (store
 	defer cancel()
 
 	entry, err := s.cfg.Node.Get(ctx, key)
+	w.Header().Set(headerShard, strconv.Itoa(int(s.cfg.Node.ShardFor(key).ID)))
 	switch {
 	case err == nil:
 		w.Header().Set(headerServedBy, s.cfg.NodeID)

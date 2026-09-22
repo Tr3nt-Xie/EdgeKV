@@ -53,6 +53,12 @@ type Store struct {
 	hs        *pb.HardState
 	meta      *pb.SnapshotMeta
 	lastIndex uint64
+
+	// snapMu serialises whole SaveSnapshot calls. Two snapshots can be in
+	// flight at once (the applier's own and one installed from the leader);
+	// letting them interleave once allowed GC for the newer one to delete the
+	// older one's file between its rename and its meta update.
+	snapMu sync.Mutex
 }
 
 var _ raft.Storage = (*Store)(nil)
@@ -191,6 +197,9 @@ func hardStateRecord(hs *pb.HardState) (wal.Record, error) {
 func (s *Store) SaveSnapshot(meta *pb.SnapshotMeta, data []byte, discardLog bool) error {
 	meta = proto.Clone(meta).(*pb.SnapshotMeta)
 
+	s.snapMu.Lock()
+	defer s.snapMu.Unlock()
+
 	s.mu.Lock()
 	if s.meta != nil && meta.LastIncludedIndex <= s.meta.LastIncludedIndex {
 		s.mu.Unlock()
@@ -250,22 +259,42 @@ func (s *Store) gcLocked() error {
 	}
 
 	// Older snapshots cannot serve as a fallback once the log they would need
-	// has been deleted, so keep only the newest.
+	// has been deleted, so remove everything below the current one. Never
+	// touch a file with a HIGHER index: SaveSnapshot renames its file before
+	// re-taking the lock to publish it in s.meta, and a Save-triggered rotation
+	// can run GC in that window. Deleting the newer file there would leave the
+	// store believing in a snapshot that no longer exists on disk.
 	files, err := s.snapshotFiles()
 	if err != nil {
 		return err
 	}
 	current := s.snapshotPath(s.meta)
 	for _, f := range files {
-		if f != current {
-			os.Remove(f)
+		if f == current {
+			continue
 		}
+		idx, _, ok := parseSnapshotPath(f)
+		if ok && idx > s.meta.LastIncludedIndex {
+			continue
+		}
+		os.Remove(f)
 	}
 	return nil
 }
 
+// parseSnapshotPath extracts (index, term) from snap-<index>-<term>.snap.
+func parseSnapshotPath(path string) (index, term uint64, ok bool) {
+	var i, t uint64
+	if _, err := fmt.Sscanf(filepath.Base(path), "snap-%016x-%016x.snap", &i, &t); err != nil {
+		return 0, 0, false
+	}
+	return i, t, true
+}
+
 // Snapshot returns the newest snapshot.
 func (s *Store) Snapshot() (*pb.SnapshotMeta, []byte, error) {
+	s.snapMu.Lock()
+	defer s.snapMu.Unlock()
 	s.mu.Lock()
 	meta := s.meta
 	s.mu.Unlock()

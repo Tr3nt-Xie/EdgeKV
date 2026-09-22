@@ -1,0 +1,55 @@
+# Local three-node cluster plus one simulated CDN edge.
+#
+#   docker compose up -d --build
+#   curl localhost:8081/v1/status
+#   docker compose kill n2        # crash a node
+#   docker compose start n2       # bring it back from its volume
+#   docker compose down -v        # wipe everything
+#
+# Each node keeps its WAL and snapshots in a named volume, so "kill + start"
+# is a real crash-and-recover, not a fresh node.
+
+x-node: &node
+  build: .
+  image: edgekv:local
+  restart: unless-stopped
+  environment: &node-env
+    EDGEKV_CLUSTER: "n1=n1:9090|http://n1:8080,n2=n2:9090|http://n2:8080,n3=n3:9090|http://n3:8080"
+    EDGEKV_SHARDS: "3"
+    EDGEKV_FSYNC: "true"
+    EDGEKV_INVALIDATOR: "edge:http://edge:8000"
+    EDGEKV_DATA: /data
+  networks: [edgekv]
+
+services:
+  n1:
+    <<: *node
+    environment: { <<: *node-env, EDGEKV_ID: n1 }
+    volumes: [n1-data:/data]
+    ports: ["8081:8080"]
+  n2:
+    <<: *node
+    environment: { <<: *node-env, EDGEKV_ID: n2 }
+    volumes: [n2-data:/data]
+    ports: ["8082:8080"]
+  n3:
+    <<: *node
+    environment: { <<: *node-env, EDGEKV_ID: n3 }
+    volumes: [n3-data:/data]
+    ports: ["8083:8080"]
+
+  edge:
+    image: edgekv:local
+    entrypoint: ["edgekv-edge"]
+    command: ["-listen", ":8000", "-origins", "http://n1:8080,http://n2:8080,http://n3:8080"]
+    ports: ["8000:8000"]
+    networks: [edgekv]
+    depends_on: [n1, n2, n3]
+
+volumes:
+  n1-data:
+  n2-data:
+  n3-data:
+
+networks:
+  edgekv:
