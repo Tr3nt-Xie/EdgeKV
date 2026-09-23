@@ -96,6 +96,14 @@ resource "aws_security_group" "node" {
     prefix_list_ids = [data.aws_ec2_managed_prefix_list.cloudfront.id]
     cidr_blocks     = [var.my_ip]
   }
+  # HTTP API between nodes: a node that is not the leader of a shard forwards
+  # the request to the leader over the private network.
+  ingress {
+    from_port = 8080
+    to_port   = 8080
+    protocol  = "tcp"
+    self      = true
+  }
   ingress {
     from_port   = 22
     to_port     = 22
