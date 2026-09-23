@@ -271,8 +271,11 @@ resource "aws_cloudfront_distribution" "edge" {
   }
 
   # Default: never cache. /v1/kv, /v1/status and everything else pass through.
+  # CloudFront forbids PUT/POST/DELETE on a behaviour that targets an origin
+  # group, so this one points at a single node; that node forwards to the
+  # right leader itself. Writes should go straight to the nodes anyway.
   default_cache_behavior {
-    target_origin_id         = "edgekv-nodes"
+    target_origin_id         = "edgekv-n1"
     viewer_protocol_policy   = "redirect-to-https"
     allowed_methods          = ["GET", "HEAD", "OPTIONS", "PUT", "POST", "PATCH", "DELETE"]
     cached_methods           = ["GET", "HEAD"]
@@ -280,7 +283,8 @@ resource "aws_cloudfront_distribution" "edge" {
     origin_request_policy_id = aws_cloudfront_origin_request_policy.all_viewer.id
   }
 
-  # The one cacheable path.
+  # The one cacheable path. GET/HEAD only, so it may use the origin group and
+  # fail over between nodes.
   ordered_cache_behavior {
     path_pattern             = "/v1/cache/*"
     target_origin_id         = "edgekv-nodes"
