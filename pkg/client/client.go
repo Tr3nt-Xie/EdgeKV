@@ -146,7 +146,10 @@ func (c *Client) CachedGet(ctx context.Context, key string) (Entry, error) {
 	var hdr http.Header
 	var err error
 	if c.edge != "" {
-		hdr, err = c.request(ctx, c.edge, http.MethodGet, path, nil, nil, &out)
+		// Through the CDN the origin must forward on our behalf: the CDN
+		// forwards viewer headers verbatim, so an X-Edgekv-No-Forward here
+		// would make a non-leader origin answer 421 instead of proxying.
+		hdr, err = c.request(ctx, c.edge, http.MethodGet, path, nil, http.Header{"X-Edgekv-No-Forward": nil}, &out)
 	} else {
 		err = c.do(ctx, http.MethodGet, key, path, nil, &hdr, &out)
 	}
@@ -222,12 +225,21 @@ type redirectError struct {
 
 func (e *redirectError) Error() string { return "edgekv: not leader, redirected to " + e.leaderURL }
 
-func (c *Client) request(ctx context.Context, base, method, path string, body []byte, _ http.Header, out any) (http.Header, error) {
+// request performs one HTTP call. override lets a caller replace a default
+// header; a key with a nil value removes it.
+func (c *Client) request(ctx context.Context, base, method, path string, body []byte, override http.Header, out any) (http.Header, error) {
 	req, err := http.NewRequestWithContext(ctx, method, base+path, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("X-Edgekv-No-Forward", "1")
+	for k, v := range override {
+		if v == nil {
+			req.Header.Del(k)
+		} else {
+			req.Header[k] = v
+		}
+	}
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}

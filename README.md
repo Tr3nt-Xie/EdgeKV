@@ -61,7 +61,7 @@ go test -race -short ./...     # skips the slow ones
 
 ## Benchmarks
 
-`bench/run-local.sh` runs the experiment matrix from the spec (topology, fsync cost, concurrency, key distribution, cache TTL vs staleness, invalidation failure) and `bench/plot.py` renders `docs/charts/`. Results and analysis: [docs/experiments.md](docs/experiments.md). Headline: with the invalidation API deliberately broken, maximum observed staleness stayed at 4.76 s under a 5 s TTL.
+`bench/run-local.sh` runs the experiment matrix from the spec (topology, fsync cost, concurrency, key distribution, cache TTL vs staleness, invalidation failure) and `bench/plot.py` renders `docs/charts/`. Results and analysis, local and AWS: [docs/experiments.md](docs/experiments.md). Headlines: on AWS, six shards give 1.9× the throughput of one; with CloudFront invalidation taking 3–5 s to propagate, maximum observed staleness stayed under the TTL.
 
 ## Deploy
 

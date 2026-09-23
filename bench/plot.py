@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
-"""Render the charts in docs/charts/ from bench/results/local.jsonl.
+"""Render benchmark charts from a results file.
 
-    python3 bench/plot.py [bench/results/local.jsonl]
+    python3 bench/plot.py [results.jsonl] [out_dir] [name_prefix_to_strip]
+    python3 bench/plot.py                                   # local -> docs/charts/
+    python3 bench/plot.py bench/results/aws.jsonl docs/charts/aws aws-
 """
 import json
 import sys
@@ -13,13 +15,15 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 src = Path(sys.argv[1] if len(sys.argv) > 1 else "bench/results/local.jsonl")
-out = Path("docs/charts")
+out = Path(sys.argv[2] if len(sys.argv) > 2 else "docs/charts")
+prefix = sys.argv[3] if len(sys.argv) > 3 else ""
 out.mkdir(parents=True, exist_ok=True)
 
 runs = OrderedDict()
 for line in src.read_text().splitlines():
     if line.strip():
         r = json.loads(line)
+        r["name"] = r["name"].removeprefix(prefix)
         runs[r["name"]] = r  # last run with a name wins
 
 def lat(r, op="all", p="p99"):
@@ -39,13 +43,14 @@ def bar(names, values, title, ylabel, fname, labels=None, color="#2b5797"):
 # 1. topology
 names = [n for n in ["topo-1node-1shard", "topo-3node-1shard", "topo-3node-3shard", "topo-3node-6shard"] if n in runs]
 if names:
+    tl = {"topo-1node-1shard": "1 node\n1 shard", "topo-3node-1shard": "3 nodes\n1 shard", "topo-3node-3shard": "3 nodes\n3 shards", "topo-3node-6shard": "3 nodes\n6 shards"}
     bar(names, [runs[n]["ops_per_s"] for n in names], "Throughput by topology (80/15/5, 50 clients, fsync on)",
-        "ops/s", "topology-throughput.png", labels=["1 node\n1 shard", "3 nodes\n1 shard", "3 nodes\n3 shards", "3 nodes\n6 shards"][:len(names)])
+        "ops/s", "topology-throughput.png", labels=[tl[n] for n in names])
     fig, ax = plt.subplots(figsize=(7, 4))
     for op, c in [("put", "#c0392b"), ("get", "#2b5797")]:
         ax.plot(range(len(names)), [lat(runs[n], op, "p99") for n in names], "o-", label=f"{op} p99", color=c)
         ax.plot(range(len(names)), [lat(runs[n], op, "p50") for n in names], "s--", label=f"{op} p50", color=c, alpha=.5)
-    ax.set_xticks(range(len(names))); ax.set_xticklabels(["1n/1s", "3n/1s", "3n/3s", "3n/6s"][:len(names)])
+    ax.set_xticks(range(len(names))); ax.set_xticklabels([tl[n].replace("\n", " ") for n in names])
     ax.set_ylabel("latency (ms)"); ax.set_title("Latency by topology"); ax.legend(); ax.spines[["top", "right"]].set_visible(False)
     fig.tight_layout(); fig.savefig(out / "topology-latency.png", dpi=150); plt.close(fig); print("wrote topology-latency.png")
 
@@ -92,10 +97,11 @@ if "dist-uniform" in runs and "dist-zipf" in runs:
     fig.tight_layout(); fig.savefig(out / "distribution.png", dpi=150); plt.close(fig); print("wrote distribution.png")
 
 # 5. cache
-cache = [n for n in ["cache-origin", "cache-edge-ttl5", "cache-edge-ttl30", "cache-edge-ttl60", "cache-invalidation-failed-ttl5"] if n in runs]
+cache = [n for n in ["cache-origin", "cache-edge-ttl5", "cache-cf-ttl5", "cache-edge-ttl30", "cache-cf-ttl30", "cache-edge-ttl60", "cache-invalidation-failed-ttl5"] if n in runs]
 if len(cache) > 1:
     fig, axes = plt.subplots(1, 3, figsize=(13, 4))
     labels = {"cache-origin": "origin\n(no cache)", "cache-edge-ttl5": "edge\nTTL 5s", "cache-edge-ttl30": "edge\nTTL 30s",
+              "cache-cf-ttl5": "CloudFront\nTTL 5s", "cache-cf-ttl30": "CloudFront\nTTL 30s",
               "cache-edge-ttl60": "edge\nTTL 60s", "cache-invalidation-failed-ttl5": "edge TTL 5s\ninvalidation\nFAILING"}
     lab = [labels[n] for n in cache]
     hit = [100 * runs[n].get("cache_hits", 0) / max(1, runs[n].get("cache_reads", 1)) for n in cache]
