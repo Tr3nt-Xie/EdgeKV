@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math/rand/v2"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -236,8 +237,31 @@ type history struct {
 	ops []porcupine.Operation
 }
 
+// stamp returns a strictly increasing timestamp for call and return events.
+// The wall clock is not good enough: on macOS it ticks once per microsecond,
+// so a call made right after another operation returned can get the same
+// timestamp, and Porcupine treats a tie as "concurrent". That let the stale
+// read in TestCheckerDetectsStaleRead pass as legal about one run in four.
+var (
+	stampEpoch = time.Now()
+	lastStamp  atomic.Int64
+)
+
+func stamp() int64 {
+	for {
+		now := int64(time.Since(stampEpoch))
+		last := lastStamp.Load()
+		if now <= last {
+			now = last + 1
+		}
+		if lastStamp.CompareAndSwap(last, now) {
+			return now
+		}
+	}
+}
+
 func (h *history) record(client int, in kvInput, call int64, out kvOutput) {
-	ret := time.Now().UnixNano()
+	ret := stamp()
 	if out.unknown {
 		if in.op == "get" {
 			return // a read that never returned constrains nothing
@@ -296,7 +320,7 @@ func TestLinearizableUnderFaults(t *testing.T) {
 				default:
 					in.op = "delete"
 				}
-				call := time.Now().UnixNano()
+				call := stamp()
 				out := c.do(in, fmt.Sprintf("c%d-op%d", cl, i), 4*time.Second)
 				h.record(cl, in, call, out)
 				if !out.unknown && out.status != pb.Status_STATUS_NOT_FOUND {
@@ -372,7 +396,7 @@ func TestCheckerDetectsStaleRead(t *testing.T) {
 
 	write := func(v string) {
 		in := kvInput{op: "put", key: key, value: v}
-		call := time.Now().UnixNano()
+		call := stamp()
 		out := c.do(in, "w-"+v, 5*time.Second)
 		if out.unknown {
 			t.Fatalf("write %q did not complete", v)
@@ -401,7 +425,7 @@ func TestCheckerDetectsStaleRead(t *testing.T) {
 	// The majority elects a new leader and commits a newer value.
 	for {
 		in := kvInput{op: "put", key: key, value: "running"}
-		call := time.Now().UnixNano()
+		call := stamp()
 		ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 		out, err := c.attempt(ctx, rest[rand.IntN(len(rest))], in, "w-running")
 		cancel()
@@ -413,7 +437,7 @@ func TestCheckerDetectsStaleRead(t *testing.T) {
 
 	// The unsafe read: straight from the old leader's local state.
 	in := kvInput{op: "get", key: key}
-	call := time.Now().UnixNano()
+	call := stamp()
 	e, err := c.node(old).ShardFor(key).Store.Get(key)
 	if err != nil {
 		t.Fatal(err)
